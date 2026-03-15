@@ -44,7 +44,7 @@ data MarketData :: Effect where
   GetSpotMeta       :: MarketData m SpotMeta
   GetSpotAssetCtxs  :: MarketData m [SpotAssetCtx]
   GetOrderBook      :: Coin -> MarketData m OrderBook
-  SubscribeTrades   :: Coin -> MarketData m (TBQueue Trade)
+  SubscribeTrades   :: Coin -> MarketData m ()  -- 注册订阅，事件通过 EventBus 投递
 ```
 
 ### Account Effect
@@ -70,7 +70,7 @@ data RiskControl :: Effect where
 
 ### OrderManager Effect
 
-订单生命周期管理。
+订单生命周期管理。`OrderManager` 是 `Exchange` 之上的高层 effect：`runOrderManagerIO` 内部调用 `Exchange` effect 执行下单/撤单，同时维护 `EngineEnv.eeOpenOrders` 的 `TVar` 状态。WS listener 也会更新该 `TVar`（通过推送 `EventOrderFill`/`EventOrderCancel` 事件）。
 
 ```haskell
 data OrderManager :: Effect where
@@ -89,6 +89,10 @@ data AlgoExec :: Effect where
   RunIceberg :: IcebergParams -> AlgoExec m AlgoHandle
   CancelAlgo :: AlgoHandle -> AlgoExec m ()
 ```
+
+### Log Effect
+
+日志使用 `co-log-core` 提供的 `Log` effect，集成于 Effectful 生态。不单独定义，直接复用 `co-log-effectful` 或通过 Static dispatch 封装 `co-log-core` 的 `LogAction`。
 
 ## 核心数据类型
 
@@ -179,6 +183,68 @@ data IcebergParams = IcebergParams
   }
 ```
 
+### 引擎辅助类型
+
+```haskell
+-- Config: 从 YAML + 环境变量加载
+data Config = Config
+  { cfgNetwork    :: Network          -- Testnet | Mainnet
+  , cfgApiUrl     :: Text             -- "https://api.hyperliquid.xyz"
+  , cfgWsUrl      :: Text             -- "wss://api.hyperliquid.xyz/ws"
+  , cfgPrivateKey :: ByteString       -- 从 HYPELL_PRIVATE_KEY 环境变量读取
+  , cfgRisk       :: RiskLimits       -- 初始风控参数
+  , cfgEngine     :: EngineConfig     -- 引擎参数
+  , cfgLogLevel   :: LogLevel         -- Debug | Info | Warn | Error
+  }
+
+data Network = Testnet | Mainnet
+
+data EngineConfig = EngineConfig
+  { ecEventQueueSize      :: Int      -- 事件总线容量，默认 4096
+  , ecOrderPollIntervalMs :: Int      -- 订单轮询间隔，默认 2000
+  , ecHeartbeatIntervalMs :: Int      -- 心跳间隔，默认 1000
+  }
+
+-- ManagedOrder: OrderManager 返回的托管订单
+data ManagedOrder = ManagedOrder
+  { moId        :: OrderId
+  , moRequest   :: OrderRequest
+  , moStatus    :: OrderStatus
+  , moCreatedAt :: UTCTime
+  }
+
+data OrderStatus
+  = OsResting                         -- 挂单中
+  | OsPartialFill Scientific          -- 部分成交(已成交量)
+  | OsFilled Scientific Scientific    -- 全部成交(总量, 均价)
+  | OsCancelled
+  | OsRejected Text
+
+-- DailyStats: 当日累计统计，用于风控
+data DailyStats = DailyStats
+  { dsTotalVolume   :: Scientific     -- 当日累计交易量
+  , dsTotalTrades   :: Int            -- 当日交易笔数
+  , dsLastOrderTime :: Maybe UTCTime  -- 上次下单时间(用于冷却期)
+  , dsDate          :: Day            -- 统计日期，跨日自动重置
+  }
+
+-- AlgoHandle: 算法执行句柄
+data AlgoHandle = AlgoHandle
+  { ahId     :: Text                  -- 唯一标识
+  , ahThread :: Async ()              -- 执行线程
+  , ahParams :: AlgoParams            -- 原始参数
+  , ahStatus :: TVar AlgoStatus       -- 实时状态
+  }
+
+data AlgoParams = AlgoTWAP TWAPParams | AlgoIceberg IcebergParams
+
+data AlgoStatus
+  = AlgoRunning Scientific            -- 已执行量
+  | AlgoCompleted Scientific          -- 最终执行量
+  | AlgoCancelled
+  | AlgoFailed Text
+```
+
 ## Strategy Typeclass 接口
 
 策略通过实现 `Strategy` typeclass 接入框架。策略不直接调用 `Exchange` effect，而是输出 `TradeAction` 指令，由框架执行引擎统一处理，实现策略与执行的解耦。
@@ -192,7 +258,7 @@ class Strategy s where
     => s -> Eff es s
 
   onEvent
-    :: (MarketData :> es, Account :> es, RiskControl :> es, Log :> es)
+    :: (MarketData :> es, Account :> es, Log :> es)
     => s -> MarketEvent -> Eff es (s, [TradeAction])
 
   onShutdown
@@ -265,7 +331,13 @@ data EngineEnv = EngineEnv
 - **TBQueue 事件总线**：所有数据源（WS 行情、订单状态、定时器）向同一有界队列推送事件，主循环单线程消费
 - **STM 共享状态**：仓位、活跃订单、风控参数用 `TVar` 包装，线程安全读写，支持运行时热更新
 - **withAsync 结构化并发**：后台线程用 `withAsync` 管理，异常传播到主线程实现 fail-fast
-- **WebSocket 自动重连**：断连后 3 秒重连，Hyperliquid 重连后发送 snapshot 补全数据
+- **WebSocket 自动重连**：断连后指数退避重连（初始 1 秒，最大 30 秒，乘数 2x），最多重试 20 次后放弃并通知策略 `onShutdown`。重连期间 `TradeAction` 会因 `Exchange` effect 失败而被 RiskGate 拦截记录。Hyperliquid 重连后发送 snapshot 补全数据
+
+### 后台线程说明
+
+- **wsListenerLoop**: 维护 WebSocket 连接，解析推送消息并归一化为 `MarketEvent`（`EventTrade`、`EventOrderBookUpdate`）写入 EventBus。处理断连重连和重新订阅
+- **orderTrackerLoop**: 每 `ecOrderPollIntervalMs` 毫秒通过 REST `/info` 查询用户活跃订单，与 `eeOpenOrders` TVar 对比，检测新成交和撤单，生成 `EventOrderFill` / `EventOrderCancel` 事件写入 EventBus
+- **timerLoop**: 每 `ecHeartbeatIntervalMs` 毫秒向 EventBus 写入 `EventTimer`，供策略做定时逻辑
 
 ### 引擎生命周期
 
@@ -309,9 +381,11 @@ executeAction env = \case
 ### IO Interpreter 要点
 
 - `runExchangeIO`: 通过 `Api.Rest` 发送签名的 POST 请求到 `/exchange`
-- `runMarketDataIO`: REST 查询 + WebSocket 订阅注册
+- `runMarketDataIO`: REST 查询 + WS 订阅注册（`SubscribeTrades` 向 WS listener 注册 coin，事件通过 EventBus 投递）
 - `runRiskControlIO`: 从 `TVar` 读取风控参数和统计数据，调用纯函数 `evaluateRisk`
 - `runAccountIO`: REST 查询 `/info` 获取余额
+- `runOrderManagerIO`: 内部调用 `Exchange` effect 执行下单/撤单，同步更新 `eeOpenOrders` TVar
+- `runAlgoExecIO`: 为每个算法创建独立 `Async` 线程，TWAP 线程按间隔循环下单，Iceberg 线程监听成交后补单，线程引用存入 `AlgoHandle`
 
 ### Pure Interpreter 要点
 
@@ -332,14 +406,15 @@ evaluateRisk :: RiskLimits -> DailyStats -> Map Coin TokenBalance -> OrderReques
 | 层级 | 内容 | 方法 |
 |------|------|------|
 | 单元测试 | `evaluateRisk`、JSON roundtrip、策略状态转换 | 纯函数 + `@?=` |
+| 属性测试 | 风控不变量（超限订单必定拒绝）、算法参数校验 | QuickCheck property tests |
 | 集成测试 | 策略 + 执行流程 | Pure interpreter + `runPureEff` |
 | 端到端测试 | 完整下单/撤单流程 | Hyperliquid testnet |
 
 ## 项目结构
 
 ```
-Users/yang/hypell/
-├── Users/yang/hypell.cabal
+hypell/
+├── hypell.cabal
 ├── app/Main.hs
 ├── src/Hypell/
 │   ├── Types.hs              -- 核心数据类型
