@@ -21,7 +21,12 @@ Hypell 是一个用 Haskell 编写的 Hyperliquid 现货量化执行框架。框
 
 ## 核心 Effect 定义
 
-框架定义 6 个 domain-specific effects，每个代表一个清晰职责边界，均使用 Dynamic dispatch：
+框架定义 6 个 domain-specific effects + 1 个 Log effect，每个代表一个清晰职责边界。除 `Log`（Static dispatch）外，所有 effect 均使用 Dynamic dispatch。
+
+**Effectful 约定说明：**
+- `runEff` 和 `send` 是 `effectful-core` 的标准导出函数
+- 每个 Dynamic effect 使用 `makeEffect` (TH) 自动生成 camelCase 辅助函数（如 `PlaceOrder` → `placeOrder`、`CheckOrder` → `checkOrder`），spec 中调用的 `checkOrder`、`submitOrder` 等均为 TH 生成
+- `mkLogAction` 是项目内部函数，根据 `Config.cfgLogLevel` 构造 `LogAction IO Text`
 
 ### Exchange Effect
 
