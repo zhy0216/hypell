@@ -1,0 +1,19 @@
+network: testnet
+apiUrl: "https://api.hyperliquid-testnet.xyz"
+wsUrl: "wss://api.hyperliquid-testnet.xyz/ws"
+
+risk:
+  maxOrderSize: 1000
+  maxDailyVolume: 50000
+  cooldownMs: 500
+  maxPositionSize:
+    "HYPE/USDC": 5000
+    "PURR/USDC": 10000
+
+engine:
+  eventQueueSize: 4096
+  orderPollIntervalMs: 2000
+  heartbeatIntervalMs: 1000
+
+logging:
+  level: info

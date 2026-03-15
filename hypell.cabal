@@ -1,0 +1,99 @@
+cabal-version: 3.0
+name:          hypell
+version:       0.1.0.0
+synopsis:      Hyperliquid spot trading execution framework
+license:       MIT
+build-type:    Simple
+
+common common-deps
+  default-language: GHC2021
+  default-extensions:
+    DataKinds
+    GADTs
+    TypeFamilies
+    OverloadedStrings
+    LambdaCase
+    TemplateHaskell
+    DeriveGeneric
+    DerivingStrategies
+    GeneralizedNewtypeDeriving
+  ghc-options: -Wall -Wno-orphans
+  build-depends:
+      base >= 4.18 && < 5
+    , text
+    , bytestring
+    , containers
+    , stm
+    , async
+    , time
+    , effectful-core >= 2.3
+    , effectful-th
+    , aeson
+    , scientific
+    , co-log-core
+
+library
+  import: common-deps
+  hs-source-dirs: src
+  exposed-modules:
+      Hypell
+    , Hypell.Types
+    , Hypell.Config
+    , Hypell.Effect.Log
+    , Hypell.Effect.Exchange
+    , Hypell.Effect.MarketData
+    , Hypell.Effect.Account
+    , Hypell.Effect.RiskControl
+    , Hypell.Effect.OrderManager
+    , Hypell.Effect.AlgoExec
+    , Hypell.Risk
+    , Hypell.Strategy
+    , Hypell.Interpreter.Exchange.Pure
+    , Hypell.Interpreter.MarketData.Pure
+    , Hypell.Interpreter.Account.Pure
+    , Hypell.Interpreter.RiskControl
+    , Hypell.Interpreter.OrderManager
+    , Hypell.Interpreter.AlgoExec
+    , Hypell.Api.Rest
+    , Hypell.Api.Signing
+    , Hypell.Api.WebSocket
+    , Hypell.Interpreter.Exchange.IO
+    , Hypell.Interpreter.MarketData.IO
+    , Hypell.Interpreter.Account.IO
+    , Hypell.Engine
+    , Hypell.Algo.TWAP
+    , Hypell.Algo.Iceberg
+  build-depends:
+      http-client
+    , http-client-tls
+    , http-types
+    , websockets
+    , wuss
+    , crypton
+    , memory
+    , yaml
+    , optparse-applicative
+
+test-suite hypell-test
+  import: common-deps
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Spec.hs
+  other-modules:
+      Test.Hypell.TypesTest
+    , Test.Hypell.RiskTest
+    , Test.Hypell.StrategyTest
+    , Test.Hypell.AlgoTest
+  build-depends:
+      hypell
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
+    , QuickCheck
+
+executable simple-grid
+  import: common-deps
+  hs-source-dirs: examples
+  main-is: SimpleGrid.hs
+  build-depends:
+      hypell
