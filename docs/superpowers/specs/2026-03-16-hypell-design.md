@@ -92,9 +92,34 @@ data AlgoExec :: Effect where
 
 ### Log Effect
 
-日志使用 `co-log-core` 提供的 `Log` effect，集成于 Effectful 生态。不单独定义，直接复用 `co-log-effectful` 或通过 Static dispatch 封装 `co-log-core` 的 `LogAction`。
+日志通过 Static dispatch 封装 `co-log-core` 的 `LogAction`。定义如下：
+
+```haskell
+data Log :: Effect
+type instance DispatchOf Log = Static WithSideEffects
+newtype instance StaticRep Log = Log (LogAction IO Text)
+
+log :: Log :> es => Text -> Eff es ()
+log msg = do
+  Log action <- getStaticRep
+  unsafeEff_ $ unLogAction action msg
+
+runLog :: IOE :> es => LogAction IO Text -> Eff (Log : es) a -> Eff es a
+runLog action = evalStaticRep (Log action)
+
+data LogLevel = Debug | Info | Warn | Error
+  deriving (Eq, Ord, Show)
+-- LogLevel 用于 Config.cfgLogLevel 过滤日志级别
+```
 
 ## 核心数据类型
+
+### 基础标识类型
+
+```haskell
+type OrderId = Word64          -- Hyperliquid 返回的数字订单 ID
+type ClientOrderId = Text      -- 客户端自定义订单 ID (cloid)，hex 格式
+```
 
 ### 币对与订单
 
@@ -125,6 +150,20 @@ data OrderResponse
 data CancelRequest
   = CancelById Coin OrderId
   | CancelByCloid Coin ClientOrderId
+
+data CancelResponse
+  = CancelSuccess
+  | CancelError Text            -- "Order was never placed, already canceled, or filled"
+
+-- Order: 活跃订单的完整表示，存储在 eeOpenOrders 中
+data Order = Order
+  { oId        :: OrderId
+  , oRequest   :: OrderRequest
+  , oStatus    :: OrderStatus
+  , oFilledSz  :: Scientific    -- 已成交量
+  , oAvgPrice  :: Maybe Scientific
+  , oCreatedAt :: UTCTime
+  }
 ```
 
 ### 行情数据
@@ -146,6 +185,37 @@ data SpotAssetCtx = SpotAssetCtx
   { sacCoin :: Coin, sacMarkPrice :: Scientific
   , sacMidPrice :: Scientific, sacDayVol :: Scientific
   , sacPrevPrice :: Scientific
+  }
+
+-- SpotMeta: 现货市场元数据
+data SpotMeta = SpotMeta
+  { smTokens   :: [TokenInfo]
+  , smUniverse :: [SpotPair]
+  }
+
+data TokenInfo = TokenInfo
+  { tiName    :: Text
+  , tiIndex   :: Int
+  , tiTokenId :: Text
+  , tiDecimals :: Int
+  }
+
+data SpotPair = SpotPair
+  { spName       :: Text          -- "PURR/USDC"
+  , spBaseToken  :: Int           -- token index
+  , spQuoteToken :: Int
+  , spIndex      :: Int           -- universe index
+  }
+
+-- UserTrade: 用户历史成交记录
+data UserTrade = UserTrade
+  { utCoin      :: Coin
+  , utSide      :: Side
+  , utPrice     :: Scientific
+  , utSize      :: Scientific
+  , utFee       :: Scientific
+  , utTime      :: UTCTime
+  , utOrderId   :: OrderId
   }
 ```
 
@@ -344,12 +414,12 @@ data EngineEnv = EngineEnv
 ```haskell
 runEngine :: Strategy s => Config -> s -> IO ()
 runEngine cfg initialStrategy = runEff
-  . runLog stdoutLogger
-  . runRiskControl
-  . runOrderManager
-  . runAccount
-  . runMarketData
-  . runExchange cfg
+  . runLog (mkLogAction cfg)
+  . runRiskControlIO env
+  . runOrderManagerIO env
+  . runAccountIO env
+  . runMarketDataIO env
+  . runExchangeIO env
   $ do
     env <- initEnv cfg
     withAsync (wsListenerLoop env) $ \ws ->
@@ -358,9 +428,27 @@ runEngine cfg initialStrategy = runEff
           eventLoop env initialStrategy
 ```
 
+注：`runEngine` 中的 `run*IO` 后缀与 IO interpreter 命名一致。实际实现中 `env` 需在 effect stack 之外初始化（通过 `bracket` 模式），此处为简化展示。
+
+### initEnv
+
+```haskell
+initEnv :: Config -> IO EngineEnv
+```
+
+`initEnv` 职责：
+1. 创建 `http-client-tls` 的 TLS `Manager`
+2. 初始化所有 `TVar`：`eeRiskLimits`（从 `cfgRisk`）、`eePositions`（空 Map）、`eeOpenOrders`（空 Map）、`eeDailyStats`（零值，当天日期）、`eeWsConn`（Nothing）
+3. 创建 `TBQueue` 事件总线（容量为 `ecEventQueueSize`）
+4. 不执行任何 REST 调用（行情初始化由 `wsListenerLoop` 的首次 snapshot 完成）
+
 ### 指令执行分发
 
 ```haskell
+executeAction
+  :: ( Exchange :> es, RiskControl :> es, OrderManager :> es
+     , AlgoExec :> es, Log :> es, IOE :> es )
+  => EngineEnv -> TradeAction -> Eff es ()
 executeAction env = \case
   ActionPlace req -> do
     riskResult <- checkOrder req
@@ -391,7 +479,10 @@ executeAction env = \case
 
 - `runExchangePure`: 基于 `State MockExchangeState`，模拟订单簿
 - `runMarketDataPure`: 基于 `State` 返回预设行情数据
+- `runAccountPure`: 基于 `State [TokenBalance]` 返回预设余额
 - `runRiskControlPure`: 基于 `State RiskLimits`
+- `runOrderManagerPure`: 基于 `State (Map OrderId ManagedOrder)`，内部调用 `Exchange` effect（使用 `runExchangePure`）
+- `runAlgoExecPure`: 立即返回模拟的 `AlgoHandle`，不创建线程
 
 ### 风控核心（纯函数）
 
@@ -449,8 +540,11 @@ hypell/
 │   │   └── AlgoTest.hs
 │   └── Spec.hs
 ├── config/example.yaml
-└── strategies/SimpleGrid.hs
+└── examples/
+    └── SimpleGrid.hs        -- 示例策略（独立可执行 cabal stanza）
 ```
+
+`examples/SimpleGrid.hs` 在 cabal 中作为独立的 `executable` stanza 编译，依赖 `hypell` 库。
 
 ## 核心依赖
 
