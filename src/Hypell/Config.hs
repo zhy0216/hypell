@@ -1,0 +1,1 @@
+module Hypell.Config where

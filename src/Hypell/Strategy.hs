@@ -1,0 +1,1 @@
+module Hypell.Strategy where
