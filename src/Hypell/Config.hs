@@ -24,23 +24,25 @@ import Hypell.Types (EngineConfig(..), LogLevel(..), Network(..), RiskLimits(..)
 
 -- | Runtime configuration, fully resolved (includes private key from env).
 data Config = Config
-  { cfgNetwork    :: Network
-  , cfgApiUrl     :: T.Text
-  , cfgWsUrl      :: T.Text
-  , cfgPrivateKey :: ByteString
-  , cfgRisk       :: RiskLimits
-  , cfgEngine     :: EngineConfig
-  , cfgLogLevel   :: LogLevel
+  { cfgNetwork       :: Network
+  , cfgApiUrl        :: T.Text
+  , cfgWsUrl         :: T.Text
+  , cfgPrivateKey    :: ByteString
+  , cfgWalletAddress :: T.Text
+  , cfgRisk          :: RiskLimits
+  , cfgEngine        :: EngineConfig
+  , cfgLogLevel      :: LogLevel
   } deriving stock (Show, Generic)
 
 -- | YAML-level configuration (no private key).
 data ConfigFile = ConfigFile
-  { cfNetwork :: Network
-  , cfApiUrl  :: T.Text
-  , cfWsUrl   :: T.Text
-  , cfRisk    :: RiskLimits
-  , cfEngine  :: EngineConfig
-  , cfLogging :: LoggingConfig
+  { cfNetwork       :: Network
+  , cfApiUrl        :: T.Text
+  , cfWsUrl         :: T.Text
+  , cfWalletAddress :: T.Text
+  , cfRisk          :: RiskLimits
+  , cfEngine        :: EngineConfig
+  , cfLogging       :: LoggingConfig
   } deriving stock (Show, Generic)
 
 instance FromJSON ConfigFile where
@@ -49,6 +51,7 @@ instance FromJSON ConfigFile where
       <$> o .:  "network"
       <*> o .:  "apiUrl"
       <*> o .:  "wsUrl"
+      <*> o .:? "walletAddress" .!= ""
       <*> o .:  "risk"
       <*> o .:? "engine" .!= defaultEngineConfig
       <*> o .:? "logging" .!= LoggingConfig Info
@@ -85,11 +88,12 @@ loadConfig path = do
   case mKey of
     Nothing -> error "HYPELL_PRIVATE_KEY environment variable is not set"
     Just k  -> pure Config
-      { cfgNetwork    = cfNetwork cf
-      , cfgApiUrl     = cfApiUrl cf
-      , cfgWsUrl      = cfWsUrl cf
-      , cfgPrivateKey = TE.encodeUtf8 (T.pack k)
-      , cfgRisk       = cfRisk cf
-      , cfgEngine     = cfEngine cf
-      , cfgLogLevel   = lcLevel (cfLogging cf)
+      { cfgNetwork       = cfNetwork cf
+      , cfgApiUrl        = cfApiUrl cf
+      , cfgWsUrl         = cfWsUrl cf
+      , cfgPrivateKey    = TE.encodeUtf8 (T.pack k)
+      , cfgWalletAddress = cfWalletAddress cf
+      , cfgRisk          = cfRisk cf
+      , cfgEngine        = cfEngine cf
+      , cfgLogLevel      = lcLevel (cfLogging cf)
       }

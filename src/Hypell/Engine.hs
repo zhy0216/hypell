@@ -6,18 +6,22 @@ module Hypell.Engine
   , executeAction
   ) where
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (withAsync)
 import Control.Concurrent.STM
-import Control.Monad (forM_)
+import Control.Monad (forM_, forever)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text, pack)
 import Effectful
 import Prelude hiding (log)
 
 import Hypell.Api.Rest (RestClient, newRestClient)
-import Hypell.Api.WebSocket (WsClient, connectWs)
+import Hypell.Api.WebSocket (WsClient, connectWs, wsListenerLoop)
 import Hypell.Config (Config(..))
+import Hypell.Effect.Account (Account)
 import Hypell.Effect.Exchange (Exchange)
 import Hypell.Effect.Log (Log, log, logError, runLog, mkLogAction)
+import Hypell.Effect.MarketData (MarketData)
 import Hypell.Effect.OrderManager (OrderManager)
 import Hypell.Effect.RiskControl (RiskControl, checkOrder)
 import Hypell.Interpreter.Account.IO (runAccountIO)
@@ -65,10 +69,17 @@ initEnv cfg = do
     , eeDailyStats = statsVar
     }
 
+-- | Emit a TimerTick event on the bus at the given interval.
+timerLoop :: TBQueue MarketEvent -> Int -> IO ()
+timerLoop bus intervalMs = forever $ do
+  threadDelay (intervalMs * 1000)
+  atomically $ writeTBQueue bus TimerTick
+
 -- | Main event loop: reads events from the bus, passes them to the strategy,
 -- and executes resulting actions.
 eventLoop
-  :: (RiskControl :> es, Exchange :> es, OrderManager :> es, Log :> es, IOE :> es)
+  :: ( RiskControl :> es, Exchange :> es, OrderManager :> es
+     , MarketData :> es, Account :> es, Log :> es, IOE :> es)
   => TBQueue MarketEvent -> s -> (s -> MarketEvent -> Eff es (s, [TradeAction])) -> Eff es ()
 eventLoop eventBus initialState onEvt = go initialState
   where
@@ -102,25 +113,26 @@ executeAction = \case
     Exch.cancelAll
   T.NoAction -> pure ()
 
--- | Top-level engine runner. Wires all IO interpreters together and starts
--- the event loop scaffold.
+-- | Top-level engine runner. Wires all IO interpreters and runs the event loop
+-- with concurrent WS listener and timer threads.
 runEngine :: Strategy s => Config -> s -> IO ()
-runEngine cfg _initialStrategy = do
+runEngine cfg initialStrategy = do
   env <- initEnv cfg
-  let logAction = mkLogAction (cfgLogLevel cfg)
-  putStrLn "Engine started (TODO: full wiring with withAsync)"
-  -- Scaffold: run the effect stack to demonstrate wiring compiles.
-  -- Full implementation will use withAsync for WS listener, timer, etc.
-  runEff
-    . runLog logAction
-    . runRiskControlIO (eeRiskLimits env) (eeDailyStats env) (eePositions env)
-    . runExchangeIO (eeRestClient env) (eeOpenOrders env)
-    . runOrderManagerIO (eeOpenOrders env)
-    . runMarketDataIO (eeRestClient env) (eeWsClient env)
-    . runAccountIO (eeRestClient env) ""  -- TODO: wallet address from config
-    $ do
-        log "Engine wiring initialized"
-        pure ()
+  let logAction  = mkLogAction (cfgLogLevel cfg)
+      intervalMs = ecHeartbeatIntervalMs (cfgEngine cfg)
+  withAsync (wsListenerLoop (eeWsClient env)) $ \_ ->
+    withAsync (timerLoop (eeEventBus env) intervalMs) $ \_ ->
+      runEff
+        . runLog logAction
+        . runRiskControlIO (eeRiskLimits env) (eeDailyStats env) (eePositions env)
+        . runExchangeIO (eeRestClient env) (eeOpenOrders env)
+        . runOrderManagerIO (eeOpenOrders env)
+        . runMarketDataIO (eeRestClient env) (eeWsClient env)
+        . runAccountIO (eeRestClient env) (cfgWalletAddress cfg)
+        $ do
+            log "Engine starting..."
+            strategy' <- initStrategy initialStrategy
+            eventLoop (eeEventBus env) strategy' onEvent
 
 tshow :: Show a => a -> Text
 tshow = pack . show

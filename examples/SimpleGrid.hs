@@ -3,6 +3,9 @@ module Main where
 import Data.Map.Strict qualified as Map
 import Data.Scientific (Scientific, scientific)
 import qualified Data.Text as T
+import System.Environment (getArgs)
+import Hypell.Config (loadConfig)
+import Hypell.Engine (runEngine)
 import Hypell.Types
 import Hypell.Strategy
 import Hypell.Effect.Log (log)
@@ -38,9 +41,14 @@ instance Strategy GridStrategy where
 
 main :: IO ()
 main = do
+  args <- getArgs
+  let configPath = case args of
+        (p:_) -> p
+        []    -> "config/example.yaml"
+  cfg <- loadConfig configPath
   let strategy = GridStrategy
         { gsGridLevels   = [(scientific 24 0, scientific 10 0), (scientific 26 0, scientific 10 0)]
         , gsActiveOrders = Map.empty
         }
-  putStrLn $ "Strategy: " <> show (strategyName strategy)
-  putStrLn "TODO: integrate with runEngine"
+  putStrLn $ "Strategy: " <> T.unpack (strategyName strategy)
+  runEngine cfg strategy

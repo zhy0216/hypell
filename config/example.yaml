@@ -1,6 +1,7 @@
 network: testnet
 apiUrl: "https://api.hyperliquid-testnet.xyz"
 wsUrl: "wss://api.hyperliquid-testnet.xyz/ws"
+walletAddress: "0x0000000000000000000000000000000000000000"
 
 risk:
   maxOrderSize: 1000

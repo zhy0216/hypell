@@ -7,7 +7,10 @@ module Hypell.Interpreter.Exchange.IO
   ) where
 
 import Control.Concurrent.STM
-import Data.Aeson (Value, object, (.=), fromJSON, Result(..))
+import Data.Aeson (Value, object, (.=), fromJSON, Result(..), withObject, (.:))
+import Data.Aeson.Key (toText)
+import Data.Aeson.KeyMap (toList)
+import Data.Aeson.Types (parseMaybe, Parser)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text, pack)
 import Effectful
@@ -102,12 +105,46 @@ coinToAssetIndex :: Coin -> Int
 coinToAssetIndex _coin = 10000
 
 -- | Parse a Hyperliquid order response.
--- Stub: attempts FromJSON, falls back to error.
+-- Expected format:
+--   {"status": "ok",  "response": {"type": "order", "data": {"statuses": [<status>]}}}
+--   {"status": "err", "response": "<error message>"}
+-- where <status> is one of:
+--   {"resting": {"oid": 12345}}
+--   {"filled":  {"totalSz": "1.0", "avgPx": "25.5", "oid": 12345}}
+--   {"error": "message"}
 parseOrderResponse :: Value -> OrderResponse
-parseOrderResponse val =
-  case fromJSON val of
-    Success resp -> resp
-    Error _err   -> OrderResponse "error" Nothing  -- TODO: proper Hyperliquid response parsing
+parseOrderResponse val = case parseMaybe parseHlOrderResp val of
+  Just resp -> resp
+  Nothing   -> OrderResponse "error" Nothing
+
+parseHlOrderResp :: Value -> Parser OrderResponse
+parseHlOrderResp = withObject "HlOrderResp" $ \o -> do
+  status <- o .: "status" :: Parser Text
+  case status of
+    "err" -> do
+      msg <- o .: "response" :: Parser Text
+      pure $ OrderResponse msg Nothing
+    _ -> do
+      resp     <- o .: "response"
+      dat      <- resp .: "data"
+      statuses <- dat  .: "statuses" :: Parser [Value]
+      case statuses of
+        (s:_) -> parseHlStatus s
+        []    -> pure $ OrderResponse "empty" Nothing
+
+parseHlStatus :: Value -> Parser OrderResponse
+parseHlStatus = withObject "HlStatus" $ \o ->
+  case map (\(k, v) -> (toText k, v)) (toList o) of
+    [("resting", v)] -> do
+      oid <- withObject "resting" (.: "oid") v
+      pure $ OrderResponse "resting" (Just oid)
+    [("filled", v)] -> do
+      oid <- withObject "filled" (.: "oid") v
+      pure $ OrderResponse "filled" (Just oid)
+    [("error", _)] ->
+      pure $ OrderResponse "error" Nothing
+    _ ->
+      pure $ OrderResponse "unknown" Nothing
 
 tshow :: Show a => a -> Text
 tshow = pack . show
