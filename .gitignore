@@ -1,0 +1,43 @@
+# Cabal
+dist-newstyle/
+dist/
+cabal.project.local
+cabal.project.local~
+.cabal-sandbox/
+cabal.sandbox.config
+
+# Stack
+.stack-work/
+
+# GHC
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+*.chi
+*.chs.h
+
+# Haskell profiling
+*.prof
+*.hp
+*.aux
+*.tix
+
+# Editor
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+*.iml
+.dir-locals.el
+TAGS
+tags
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+*.pem
