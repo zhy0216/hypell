@@ -15,8 +15,10 @@ module Hypell
   , module Hypell.Strategy
     -- * Risk
   , module Hypell.Risk
-    -- * Engine
+    -- * Engine (live trading)
   , module Hypell.Engine
+    -- * Backtest
+  , module Hypell.Backtest
   ) where
 
 import Hypell.Types hiding (PlaceOrder, CancelOrder, CancelAll)
@@ -31,3 +33,4 @@ import Hypell.Effect.Log
 import Hypell.Strategy
 import Hypell.Risk
 import Hypell.Engine
+import Hypell.Backtest

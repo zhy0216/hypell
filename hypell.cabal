@@ -63,6 +63,13 @@ library
     , Hypell.Engine
     , Hypell.Algo.TWAP
     , Hypell.Algo.Iceberg
+    , Hypell.Backtest
+    , Hypell.Backtest.Types
+    , Hypell.Backtest.MatchingEngine
+    , Hypell.Backtest.AccountSim
+    , Hypell.Backtest.Metrics
+    , Hypell.Backtest.Runner
+    , Hypell.Backtest.DataLoader
   build-depends:
       http-client
     , http-client-tls
@@ -73,6 +80,8 @@ library
     , memory
     , yaml
     , optparse-applicative
+    , cassava
+    , vector
 
 test-suite hypell-test
   import: common-deps
@@ -97,3 +106,11 @@ executable simple-grid
   main-is: SimpleGrid.hs
   build-depends:
       hypell
+
+executable backtest-grid
+  import: common-deps
+  hs-source-dirs: examples
+  main-is: BacktestGrid.hs
+  build-depends:
+      hypell
+    , containers

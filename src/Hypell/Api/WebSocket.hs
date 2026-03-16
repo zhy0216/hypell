@@ -121,12 +121,13 @@ parseTrade = withObject "Trade" $ \o -> do
 parseL2BookMsg :: Object -> Parser MarketEvent
 parseL2BookMsg o = do
   dat     <- o .: "data"
+  coinTxt <- dat .: "coin"   :: Parser Text
   levels  <- dat .: "levels" :: Parser [[Value]]
   epochMs <- dat .: "time"   :: Parser Int
   let bids = fromMaybe [] $ parseLevels =<< listToMaybe levels
       asks = fromMaybe [] $ parseLevels =<< listToMaybe (drop 1 levels)
       t    = posixSecondsToUTCTime (fromIntegral epochMs / 1000)
-  pure $ OrderBookUpdate (OrderBook bids asks t)
+  pure $ OrderBookUpdate (Coin coinTxt) (OrderBook bids asks t)
 
 parseLevels :: [Value] -> Maybe [(Scientific, Scientific)]
 parseLevels vs = Just $ mapMaybe (parseMaybe parseLevelEntry) vs

@@ -597,7 +597,7 @@ instance FromJSON AlgoStatus where
 -- ---------------------------------------------------------------------------
 
 data MarketEvent
-  = OrderBookUpdate OrderBook
+  = OrderBookUpdate Coin OrderBook
   | TradeUpdate     [Trade]
   | FillEvent       UserTrade
   | OrderUpdate     Order
